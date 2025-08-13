@@ -8,38 +8,39 @@
     <style>
       * { box-sizing: border-box; }
       html, body { height: 100%; }
-      body { margin: 16px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; }
-      h1 { margin: 0; font-size: 20px; }
-      .muted { color: #666; font-size: 12px; }
+      body { margin: 16px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; color:#111; background:#fff; }
 
-      /* Page layout: header + KPIs + charts (charts expand to fill viewport) */
-      .layout { height: 100%; display: flex; flex-direction: column; gap: 12px; }
-      .top { display: grid; grid-template-columns: auto 1fr; align-items: end; gap: 12px; }
-      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 12px; }
-      .card { padding: 10px; border: 1px solid #e5e5e5; border-radius: 12px; }
-      .label { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-      .kpi { font-size: 26px; font-weight: 700; }
+      .layout { height: 100%; display: flex; flex-direction: column; gap: 10px; }
+      h1 { margin: 0; font-size: 20px; font-weight: 700; }
+      .muted { color:#666; font-size:12px; }
 
-      /* Charts area: fills remaining height, two columns side-by-side */
-      .charts { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-      .chart-card { display: flex; flex-direction: column; border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; background: #fff; }
-      .chart-title { margin: 0 0 6px 0; font-size: 14px; color: #333; }
-      .chart-wrap { flex: 1; min-height: 0; }
-      .chart-wrap canvas { width: 100%; height: 100%; display: block; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 10px; }
+      .card { padding: 10px; border: 1px solid #e2e2e2; border-radius: 10px; background:#fff; }
+      .label { color:#666; font-size:11px; text-transform: uppercase; letter-spacing:.08em; }
+      .kpi { font-size: 22px; font-weight: 800; }
 
-      /* Optional: if the window gets very narrow, allow stacking horizontally scrollable instead of vertical scroll */
+      /* Two charts side-by-side; smaller height; no vertical scrollbar */
+      :root { --chart-h: 34vh; }
+      .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .chart-card { border: 1px solid #e2e2e2; border-radius: 10px; padding: 10px; background:#fff; position: relative; }
+      .chart-title { margin: 0 0 6px 0; font-size: 16px; font-weight: 700; }
+      .chart-wrap { height: var(--chart-h); }
+      .chart-wrap canvas { width: 100%; height: 100%; display:block; }
+
+      .status { position:absolute; top:10px; right:12px; font-size:11px; color:#666; }
+      .status.bad { color:#b00020; }
+
       @media (max-width: 900px) {
-        .charts { grid-auto-flow: column; grid-auto-columns: 100%; overflow-x: auto; }
+        :root { --chart-h: 42vh; }
+        .charts { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
     <div class="layout">
-      <div class="top">
-        <div>
-          <h1>Event Hubs Lag (Kafka consumer)</h1>
-          <div class="muted">Polling <code>/metrics</code> every 3s</div>
-        </div>
+      <div>
+        <h1>Event Hubs Lag (Kafka consumer)</h1>
+        <div class="muted">Polling <code>metrics</code> every 3s</div>
       </div>
 
       <div class="cards">
@@ -51,10 +52,12 @@
 
       <div class="charts">
         <div class="chart-card">
-          <h3 class="chart-title">Lag over time</h3>
+          <div class="status" id="status-lag">—</div>
+          <h3 class="chart-title">Total Lag</h3>
           <div class="chart-wrap"><canvas id="lagChart"></canvas></div>
         </div>
         <div class="chart-card">
+          <div class="status" id="status-pp">—</div>
           <h3 class="chart-title">Processed vs Produced</h3>
           <div class="chart-wrap"><canvas id="ppChart"></canvas></div>
         </div>
@@ -62,6 +65,16 @@
     </div>
 
     <script>
+      // Strong, readable colors
+      const COLORS = {
+        blue:   '#1f77b4', // produced
+        purple: '#6f42c1', // processed
+        teal:   '#17a2b8', // lag
+        grid:   '#d7d7d7',
+        ticks:  '#333',
+        axes:   '#bdbdbd'
+      };
+
       const fmt = n => Number(n ?? 0).toLocaleString();
 
       const lagEl = document.getElementById('lag');
@@ -70,27 +83,81 @@
       const topicEl = document.getElementById('topic');
       const cgEl = document.getElementById('cg');
 
-      // Charts
+      const lagStatus = document.getElementById('status-lag');
+      const ppStatus  = document.getElementById('status-pp');
+
+      const commonOpts = {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'top', labels: { color: COLORS.ticks, font: { weight: '600' } } },
+          tooltip: { mode: 'index', intersect: false }
+        },
+        scales: {
+          x: {
+            ticks: { color: COLORS.ticks, maxTicksLimit: 10 },
+            grid: { color: COLORS.grid },
+            border: { color: COLORS.axes }
+          }
+        },
+        elements: {
+          line: { borderWidth: 3, tension: 0.25, borderCapStyle: 'round' },
+          point:{ radius: 0, hoverRadius: 3 }
+        }
+      };
+
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
-        data: { labels: [], datasets: [{ label: 'Total Lag', data: [], tension: 0.2 }] },
-        options: { animation: false, responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
+        data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal }] },
+        options: {
+          ...commonOpts,
+          scales: {
+            ...commonOpts.scales,
+            y: {
+              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
+              grid:  { color: COLORS.grid },
+              border:{ color: COLORS.axes }
+            }
+          }
+        }
       });
 
       const ppChart = new Chart(document.getElementById('ppChart').getContext('2d'), {
         type: 'line',
-        data: { labels: [], datasets: [
-          { label: 'Processed Total', data: [], tension: 0.2 },
-          { label: 'Produced Total',  data: [], tension: 0.2 }
-        ]},
-        options: { animation: false, responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Processed Total', data: [], borderColor: COLORS.purple, yAxisID: 'yProcessed' },
+            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   yAxisID: 'yProduced'  }
+          ]
+        },
+        options: {
+          ...commonOpts,
+          scales: {
+            ...commonOpts.scales,
+            yProcessed: { type: 'linear', position: 'left',
+              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
+              grid:  { color: COLORS.grid }, border:{ color: COLORS.axes } },
+            yProduced:  { type: 'linear', position: 'right',
+              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
+              grid:  { drawOnChartArea: false }, border:{ color: COLORS.axes } }
+          }
+        }
       });
 
       async function tick() {
         try {
-          const res = await fetch('/metrics', { cache: 'no-store' });
+          // IMPORTANT: relative path so it works under reverse proxies/subpaths
+          const res = await fetch('metrics', { cache: 'no-store' });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const m = await res.json();
+
+          lagStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+          lagStatus.classList.remove('bad');
+          ppStatus.textContent = lagStatus.textContent;
+          ppStatus.classList.remove('bad');
 
           // KPIs
           lagEl.textContent = fmt(m.totalLag);
@@ -99,19 +166,14 @@
           topicEl.textContent = m.topic ?? '–';
           cgEl.textContent = m.consumerGroup ?? '–';
 
-          // Time label
           const now = new Date().toLocaleTimeString();
 
-          // Update Lag chart
+          // Update charts
           lagChart.data.labels.push(now);
           lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
-          if (lagChart.data.labels.length > 240) { // keep ~12 mins at 3s/sample
-            lagChart.data.labels.shift();
-            lagChart.data.datasets[0].data.shift();
-          }
-          lagChart.update();
+          if (lagChart.data.labels.length > 240) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
+          lagChart.update('none');
 
-          // Update Processed vs Produced
           ppChart.data.labels.push(now);
           ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
           ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
@@ -119,9 +181,14 @@
             ppChart.data.labels.shift();
             ppChart.data.datasets.forEach(d => d.data.shift());
           }
-          ppChart.update();
+          ppChart.update('none');
+
         } catch (e) {
-          console.error('Error fetching metrics:', e);
+          console.error('metrics fetch failed:', e);
+          lagStatus.textContent = `Error: ${e.message}`;
+          lagStatus.classList.add('bad');
+          ppStatus.textContent = lagStatus.textContent;
+          ppStatus.classList.add('bad');
         }
       }
 
