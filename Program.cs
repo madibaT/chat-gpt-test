@@ -95,4 +95,6 @@ app.MapGet("/metrics", async () =>
     return Results.Json(new { topic, consumerGroup = group, totalLag, perPartition });
 });
 
+app.UseDefaultFiles();  // serves wwwroot/index.html at "/"
+app.UseStaticFiles();
 app.Run();
