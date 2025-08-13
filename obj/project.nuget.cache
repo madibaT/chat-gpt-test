@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "3eVisR5bmNo=",
+  "success": true,
+  "projectFilePath": "/workspaces/chat-gpt-test/chat-gpt-test.csproj",
+  "expectedPackageFiles": [
+    "/home/codespace/.nuget/packages/confluent.kafka/2.11.0/confluent.kafka.2.11.0.nupkg.sha512",
+    "/home/codespace/.nuget/packages/librdkafka.redist/2.11.0/librdkafka.redist.2.11.0.nupkg.sha512"
+  ],
+  "logs": []
+}
