@@ -6,126 +6,122 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-      :root { --gap: 12px; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; margin: 24px; }
-      h1 { margin: 0 0 8px 0; }
-      .muted { color: #666; margin-bottom: 16px; }
-      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: var(--gap); margin-bottom: 16px; }
-      .card { padding: 12px; border: 1px solid #e5e5e5; border-radius: 12px; }
-      .kpi { font-size: 28px; font-weight: 700; }
-      .label { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-      .grid { display: grid; grid-template-columns: 1fr; gap: var(--gap); }
-      @media (min-width: 1000px) { .grid { grid-template-columns: 1.2fr .8fr; } }
-      canvas { background: #fff; border: 1px solid #eee; border-radius: 12px; padding: 10px; }
-      .err { color: #b00020; margin-top: 8px; white-space: pre-wrap; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 16px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; }
+      h1 { margin: 0; font-size: 20px; }
+      .muted { color: #666; font-size: 12px; }
+
+      /* Page layout: header + KPIs + charts (charts expand to fill viewport) */
+      .layout { height: 100%; display: flex; flex-direction: column; gap: 12px; }
+      .top { display: grid; grid-template-columns: auto 1fr; align-items: end; gap: 12px; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 12px; }
+      .card { padding: 10px; border: 1px solid #e5e5e5; border-radius: 12px; }
+      .label { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+      .kpi { font-size: 26px; font-weight: 700; }
+
+      /* Charts area: fills remaining height, two columns side-by-side */
+      .charts { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .chart-card { display: flex; flex-direction: column; border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; background: #fff; }
+      .chart-title { margin: 0 0 6px 0; font-size: 14px; color: #333; }
+      .chart-wrap { flex: 1; min-height: 0; }
+      .chart-wrap canvas { width: 100%; height: 100%; display: block; }
+
+      /* Optional: if the window gets very narrow, allow stacking horizontally scrollable instead of vertical scroll */
+      @media (max-width: 900px) {
+        .charts { grid-auto-flow: column; grid-auto-columns: 100%; overflow-x: auto; }
+      }
     </style>
   </head>
   <body>
-    <h1>Event Hubs Lag (Kafka consumer)</h1>
-    <div class="muted">Polling <code>/metrics</code> every 3s</div>
-
-    <div class="cards">
-      <div class="card"><div class="label">Total Lag</div><div id="lag" class="kpi">–</div></div>
-      <div class="card"><div class="label">Processed Total</div><div id="processed" class="kpi">–</div></div>
-      <div class="card"><div class="label">Produced Total</div><div id="produced" class="kpi">–</div></div>
-      <div class="card"><div class="label">Topic / Group</div><div class="kpi"><span id="topic">–</span> / <span id="cg">–</span></div></div>
-    </div>
-
-    <div class="grid">
-      <div>
-        <h3 style="margin:8px 0">Lag over time</h3>
-        <canvas id="lagChart" height="120"></canvas>
+    <div class="layout">
+      <div class="top">
+        <div>
+          <h1>Event Hubs Lag (Kafka consumer)</h1>
+          <div class="muted">Polling <code>/metrics</code> every 3s</div>
+        </div>
       </div>
-      <div>
-        <h3 style="margin:8px 0">Per-partition lag (current)</h3>
-        <canvas id="partitionChart" height="120"></canvas>
+
+      <div class="cards">
+        <div class="card"><div class="label">Total Lag</div><div id="lag" class="kpi">–</div></div>
+        <div class="card"><div class="label">Processed Total</div><div id="processed" class="kpi">–</div></div>
+        <div class="card"><div class="label">Produced Total</div><div id="produced" class="kpi">–</div></div>
+        <div class="card"><div class="label">Topic / Group</div><div class="kpi"><span id="topic">–</span> / <span id="cg">–</span></div></div>
+      </div>
+
+      <div class="charts">
+        <div class="chart-card">
+          <h3 class="chart-title">Lag over time</h3>
+          <div class="chart-wrap"><canvas id="lagChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-title">Processed vs Produced</h3>
+          <div class="chart-wrap"><canvas id="ppChart"></canvas></div>
+        </div>
       </div>
     </div>
-
-    <h3 style="margin:16px 0 8px">Processed vs Produced</h3>
-    <canvas id="ppChart" height="120"></canvas>
-
-    <div id="error" class="err"></div>
 
     <script>
-      const fmt = n => Number(n).toLocaleString();
+      const fmt = n => Number(n ?? 0).toLocaleString();
 
       const lagEl = document.getElementById('lag');
       const procEl = document.getElementById('processed');
       const prodEl = document.getElementById('produced');
       const topicEl = document.getElementById('topic');
       const cgEl = document.getElementById('cg');
-      const errEl = document.getElementById('error');
 
-      const lagCtx = document.getElementById('lagChart').getContext('2d');
-      const partitionCtx = document.getElementById('partitionChart').getContext('2d');
-      const ppCtx = document.getElementById('ppChart').getContext('2d');
-
-      const lagChart = new Chart(lagCtx, {
+      // Charts
+      const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Total Lag', data: [], tension: 0.2 }] },
-        options: { animation: false, responsive: true, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
+        options: { animation: false, responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
       });
 
-      const partitionChart = new Chart(partitionCtx, {
-        type: 'bar',
-        data: { labels: [], datasets: [{ label: 'Lag by partition', data: [] }] },
-        options: { animation: false, responsive: true, scales: { x: { ticks: { autoSkip: false } } } }
-      });
-
-      const ppChart = new Chart(ppCtx, {
+      const ppChart = new Chart(document.getElementById('ppChart').getContext('2d'), {
         type: 'line',
-        data: {
-          labels: [],
-          datasets: [
-            { label: 'Processed Total', data: [], tension: 0.2 },
-            { label: 'Produced Total',  data: [], tension: 0.2 }
-          ]
-        },
-        options: { animation: false, responsive: true, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
+        data: { labels: [], datasets: [
+          { label: 'Processed Total', data: [], tension: 0.2 },
+          { label: 'Produced Total',  data: [], tension: 0.2 }
+        ]},
+        options: { animation: false, responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 10 } } } }
       });
 
       async function tick() {
         try {
-          errEl.textContent = '';
           const res = await fetch('/metrics', { cache: 'no-store' });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const m = await res.json();
 
           // KPIs
           lagEl.textContent = fmt(m.totalLag);
-          procEl.textContent = fmt(m.processedTotal ?? 0);
-          prodEl.textContent = fmt(m.endTotal ?? 0);
+          procEl.textContent = fmt(m.processedTotal);
+          prodEl.textContent = fmt(m.endTotal);
           topicEl.textContent = m.topic ?? '–';
           cgEl.textContent = m.consumerGroup ?? '–';
 
+          // Time label
           const now = new Date().toLocaleTimeString();
 
-          // Lag time series
+          // Update Lag chart
           lagChart.data.labels.push(now);
-          lagChart.data.datasets[0].data.push(m.totalLag);
-          if (lagChart.data.labels.length > 120) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
+          lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
+          if (lagChart.data.labels.length > 240) { // keep ~12 mins at 3s/sample
+            lagChart.data.labels.shift();
+            lagChart.data.datasets[0].data.shift();
+          }
           lagChart.update();
 
-          // Processed vs Produced time series
+          // Update Processed vs Produced
           ppChart.data.labels.push(now);
           ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
           ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
-          if (ppChart.data.labels.length > 120) {
+          if (ppChart.data.labels.length > 240) {
             ppChart.data.labels.shift();
             ppChart.data.datasets.forEach(d => d.data.shift());
           }
           ppChart.update();
-
-          // Per-partition bar (current snapshot)
-          const parts = (m.perPartition || []).slice().sort((a,b) => a.partition - b.partition);
-          partitionChart.data.labels = parts.map(p => `p${p.partition}`);
-          partitionChart.data.datasets[0].data = parts.map(p => p.lag);
-          partitionChart.update();
-
         } catch (e) {
-          errEl.textContent = `Error fetching metrics: ${e.message}`;
-          console.error(e);
+          console.error('Error fetching metrics:', e);
         }
       }
 
