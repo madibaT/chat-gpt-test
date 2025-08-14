@@ -40,7 +40,7 @@
     <div class="layout">
       <div>
         <h1>Event Hubs Lag (Kafka consumer)</h1>
-        <div class="muted">Polling <code>metrics</code> every 3s</div>
+        <div class="muted">Polling <code>/metrics</code> every 3s</div>
       </div>
 
       <div class="cards">
@@ -108,6 +108,7 @@
         }
       };
 
+      // Lag chart (single axis)
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal }] },
@@ -124,39 +125,43 @@
         }
       });
 
+      // Processed vs Produced — SHARED Y-AXIS
       const ppChart = new Chart(document.getElementById('ppChart').getContext('2d'), {
         type: 'line',
         data: {
           labels: [],
           datasets: [
-            { label: 'Processed Total', data: [], borderColor: COLORS.purple, yAxisID: 'yProcessed' },
-            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   yAxisID: 'yProduced'  }
+            { label: 'Processed Total', data: [], borderColor: COLORS.purple, pointRadius: 0 },
+            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   pointRadius: 0 }
           ]
         },
         options: {
           ...commonOpts,
           scales: {
             ...commonOpts.scales,
-            yProcessed: { type: 'linear', position: 'left',
-              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
-              grid:  { color: COLORS.grid }, border:{ color: COLORS.axes } },
-            yProduced:  { type: 'linear', position: 'right',
-              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
-              grid:  { drawOnChartArea: false }, border:{ color: COLORS.axes } }
+            y: {                                     // single shared axis
+              beginAtZero: true,                     // optional; remove if you prefer tighter fit
+              ticks:  { color: COLORS.ticks, callback: v => v.toLocaleString() },
+              grid:   { color: COLORS.grid },
+              border: { color: COLORS.axes }
+              // You can guide the range if needed:
+              // suggestedMin: 0,
+              // suggestedMax: undefined
+            }
           }
         }
       });
 
       async function tick() {
         try {
-          // IMPORTANT: relative path so it works under reverse proxies/subpaths
-          const res = await fetch('metrics', { cache: 'no-store' });
+          const res = await fetch('/metrics', { cache: 'no-store' });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const m = await res.json();
 
-          lagStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+          const nowStr = `Updated ${new Date().toLocaleTimeString()}`;
+          lagStatus.textContent = nowStr;
           lagStatus.classList.remove('bad');
-          ppStatus.textContent = lagStatus.textContent;
+          ppStatus.textContent = nowStr;
           ppStatus.classList.remove('bad');
 
           // KPIs
@@ -168,12 +173,13 @@
 
           const now = new Date().toLocaleTimeString();
 
-          // Update charts
+          // Update Lag chart
           lagChart.data.labels.push(now);
           lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
           if (lagChart.data.labels.length > 240) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
           lagChart.update('none');
 
+          // Update Processed vs Produced (shared Y)
           ppChart.data.labels.push(now);
           ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
           ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
@@ -185,10 +191,9 @@
 
         } catch (e) {
           console.error('metrics fetch failed:', e);
-          lagStatus.textContent = `Error: ${e.message}`;
-          lagStatus.classList.add('bad');
-          ppStatus.textContent = lagStatus.textContent;
-          ppStatus.classList.add('bad');
+          const msg = `Error: ${e.message}`;
+          lagStatus.textContent = msg; lagStatus.classList.add('bad');
+          ppStatus.textContent = msg;  ppStatus.classList.add('bad');
         }
       }
 
