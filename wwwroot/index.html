@@ -14,10 +14,7 @@
       h1 { margin: 0; font-size: 18px; font-weight: 700; }
       .muted { color:#666; font-size:12px; }
 
-      /* Charts area:
-         - Top row: 2 side-by-side charts
-         - Bottom row: 1 full-width chart
-         Uses vh slices to avoid vertical scroll. */
+      /* Charts area: 2 on top, 1 full-width bottom */
       :root { --top-h: 34vh; --bottom-h: 26vh; }
       .charts {
         display: grid;
@@ -51,13 +48,13 @@
     <div class="layout">
       <div>
         <h1>Event Hubs (Kafka) Metrics</h1>
-        <div class="muted">Polling <code>/metrics</code> every 3s • Processed/Produced shows <b>instantaneous</b> rate</div>
+        <div class="muted">Polling <code>/metrics</code> every 3s</div>
       </div>
 
       <div class="charts">
-        <!-- Top Left: Processed vs Produced (instantaneous) -->
+        <!-- Top Left: Processed vs Produced (CUMULATIVE totals) -->
         <div class="card top-left">
-          <div class="status" id="status-rate">—</div>
+          <div class="status" id="status-pp">—</div>
           <h3 class="title">Processed vs Produced</h3>
           <div class="wrap"><canvas id="ppChart"></canvas></div>
         </div>
@@ -81,9 +78,9 @@
     <script>
       // Strong, readable colors
       const COLORS = {
-        blue:   '#1f77b4', // produced rate
-        purple: '#6f42c1', // processed rate
-        teal:   '#17a2b8', // total lag
+        blue:   '#1f77b4', // produced
+        purple: '#6f42c1', // processed
+        teal:   '#17a2b8', // lag
         orange: '#ff7f0e', // delay
         grid:   '#d7d7d7',
         ticks:  '#333',
@@ -111,19 +108,20 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Processed (events/sec)', data: [], borderColor: COLORS.purple },
-            { label: 'Produced  (events/sec)', data: [], borderColor: COLORS.blue }
+            { label: 'Processed Total', data: [], borderColor: COLORS.purple, pointRadius: 0 },
+            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   pointRadius: 0 }
           ]
         },
         options: {
           ...commonOpts,
+          // Shared Y-axis so they're directly comparable
           scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
         }
       });
 
       const delayChart = new Chart(document.getElementById('delayChart').getContext('2d'), {
         type: 'line',
-        data: { labels: [], datasets: [{ label: 'Max Delay (s)', data: [], borderColor: COLORS.orange }] },
+        data: { labels: [], datasets: [{ label: 'Max Delay (s)', data: [], borderColor: COLORS.orange, pointRadius: 0 }] },
         options: {
           ...commonOpts,
           scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
@@ -132,7 +130,7 @@
 
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
-        data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal }] },
+        data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal, pointRadius: 0 }] },
         options: {
           ...commonOpts,
           scales: { ...commonOpts.scales, y: { ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
@@ -140,12 +138,9 @@
       });
 
       // Status labels
-      const rateStatus  = document.getElementById('status-rate');
+      const ppStatus    = document.getElementById('status-pp');
       const delayStatus = document.getElementById('status-delay');
       const lagStatus   = document.getElementById('status-lag');
-
-      // For instantaneous rate calculation
-      let prevProcessed = null, prevProduced = null, prevTs = null;
 
       async function tick() {
         try {
@@ -156,40 +151,26 @@
           const now = new Date();
           const label = now.toLocaleTimeString();
           const statusText = `Updated ${label}`;
-          [rateStatus, delayStatus, lagStatus].forEach(el => { el.textContent = statusText; el.classList.remove('bad'); });
+          [ppStatus, delayStatus, lagStatus].forEach(el => { el.textContent = statusText; el.classList.remove('bad'); });
 
-          // --- Processed vs Produced: instantaneous rate (per second) ---
-          const nowTs = Date.now();
-          if (prevProcessed !== null && prevProduced !== null && prevTs !== null) {
-            const dtSec = Math.max(0.001, (nowTs - prevTs) / 1000);
-            let dProc = (m.processedTotal ?? 0) - prevProcessed;
-            let dProd = (m.endTotal ?? 0)      - prevProduced;
-            if (dProc < 0) dProc = 0; // guard resets/rewinds
-            if (dProd < 0) dProd = 0;
-            const rateProc = dProc / dtSec;
-            const rateProd = dProd / dtSec;
-
-            ppChart.data.labels.push(label);
-            ppChart.data.datasets[0].data.push(rateProc);
-            ppChart.data.datasets[1].data.push(rateProd);
-            if (ppChart.data.labels.length > 240) {
-              ppChart.data.labels.shift();
-              ppChart.data.datasets.forEach(d => d.data.shift());
-            }
-            ppChart.update('none');
+          // --- Processed vs Produced (CUMULATIVE totals) ---
+          ppChart.data.labels.push(label);
+          ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
+          ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
+          if (ppChart.data.labels.length > 240) {
+            ppChart.data.labels.shift();
+            ppChart.data.datasets.forEach(d => d.data.shift());
           }
-          prevProcessed = m.processedTotal ?? 0;
-          prevProduced  = m.endTotal ?? 0;
-          prevTs        = nowTs;
+          ppChart.update('none');
 
-          // --- Watermark Delay: seconds (uses watermarkDelayMsMax if present) ---
+          // --- Watermark Delay (seconds) ---
           const delaySec = (m.watermarkDelayMsMax != null) ? (m.watermarkDelayMsMax / 1000.0) : null;
           delayChart.data.labels.push(label);
           delayChart.data.datasets[0].data.push(delaySec);
           if (delayChart.data.labels.length > 240) { delayChart.data.labels.shift(); delayChart.data.datasets[0].data.shift(); }
           delayChart.update('none');
 
-          // --- Total Lag (current snapshot) ---
+          // --- Total Lag (snapshot) ---
           lagChart.data.labels.push(label);
           lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
           if (lagChart.data.labels.length > 240) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
@@ -197,7 +178,7 @@
 
         } catch (e) {
           const msg = `Error: ${e.message}`;
-          [rateStatus, delayStatus, lagStatus].forEach(el => { el.textContent = msg; el.classList.add('bad'); });
+          [ppStatus, delayStatus, lagStatus].forEach(el => { el.textContent = msg; el.classList.add('bad'); });
           console.error(e);
         }
       }
