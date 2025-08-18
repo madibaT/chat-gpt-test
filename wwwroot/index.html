@@ -8,30 +8,33 @@
     <style>
       * { box-sizing: border-box; }
       html, body { height: 100%; }
-      body { margin: 16px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; color:#111; background:#fff; }
+      body { margin: 12px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; color:#111; background:#fff; }
 
-      .layout { height: 100%; display: flex; flex-direction: column; gap: 10px; }
-      h1 { margin: 0; font-size: 20px; font-weight: 700; }
+      .layout { height: 100%; display: flex; flex-direction: column; gap: 8px; }
+      h1 { margin: 0; font-size: 18px; font-weight: 700; }
       .muted { color:#666; font-size:12px; }
 
-      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 10px; }
-      .card { padding: 10px; border: 1px solid #e2e2e2; border-radius: 10px; background:#fff; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 8px; }
+      .card { padding: 8px; border: 1px solid #e2e2e2; border-radius: 10px; background:#fff; }
       .label { color:#666; font-size:11px; text-transform: uppercase; letter-spacing:.08em; }
-      .kpi { font-size: 22px; font-weight: 800; }
+      .kpi { font-size: 20px; font-weight: 800; }
 
-      /* Two charts side-by-side; smaller height; no vertical scrollbar */
-      :root { --chart-h: 34vh; }
-      .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      .chart-card { border: 1px solid #e2e2e2; border-radius: 10px; padding: 10px; background:#fff; position: relative; }
-      .chart-title { margin: 0 0 6px 0; font-size: 16px; font-weight: 700; }
-      .chart-wrap { height: var(--chart-h); }
+      /* Three charts without vertical scroll: two on top, one full-width below */
+      :root { --chart-h-top: 26vh; --chart-h-bottom: 20vh; }
+      .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .charts2 { display: grid; grid-template-columns: 1fr; gap: 8px; }
+      .chart-card { border: 1px solid #e2e2e2; border-radius: 10px; padding: 8px; background:#fff; position: relative; }
+      .chart-title { margin: 0 0 4px 0; font-size: 14px; font-weight: 700; }
+      .chart-sub { margin: -2px 0 6px; color:#666; font-size:12px; }
+      .chart-wrap.top { height: var(--chart-h-top); }
+      .chart-wrap.bottom { height: var(--chart-h-bottom); }
       .chart-wrap canvas { width: 100%; height: 100%; display:block; }
 
-      .status { position:absolute; top:10px; right:12px; font-size:11px; color:#666; }
+      .status { position:absolute; top:8px; right:10px; font-size:11px; color:#666; }
       .status.bad { color:#b00020; }
 
       @media (max-width: 900px) {
-        :root { --chart-h: 42vh; }
+        :root { --chart-h-top: 22vh; --chart-h-bottom: 22vh; }
         .charts { grid-template-columns: 1fr; }
       }
     </style>
@@ -47,6 +50,7 @@
         <div class="card"><div class="label">Total Lag</div><div id="lag" class="kpi">–</div></div>
         <div class="card"><div class="label">Processed Total</div><div id="processed" class="kpi">–</div></div>
         <div class="card"><div class="label">Produced Total</div><div id="produced" class="kpi">–</div></div>
+        <div class="card"><div class="label">Watermark Delay (max)</div><div id="delayMax" class="kpi">–</div></div>
         <div class="card"><div class="label">Topic / Group</div><div class="kpi"><span id="topic">–</span> / <span id="cg">–</span></div></div>
       </div>
 
@@ -54,37 +58,50 @@
         <div class="chart-card">
           <div class="status" id="status-lag">—</div>
           <h3 class="chart-title">Total Lag</h3>
-          <div class="chart-wrap"><canvas id="lagChart"></canvas></div>
+          <div class="chart-wrap top"><canvas id="lagChart"></canvas></div>
         </div>
         <div class="chart-card">
-          <div class="status" id="status-pp">—</div>
+          <div class="status" id="status-rate">—</div>
           <h3 class="chart-title">Processed vs Produced</h3>
-          <div class="chart-wrap"><canvas id="ppChart"></canvas></div>
+          <div class="chart-sub">Instantaneous rate (events/sec)</div>
+          <div class="chart-wrap top"><canvas id="ppChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="charts2">
+        <div class="chart-card">
+          <div class="status" id="status-delay">—</div>
+          <h3 class="chart-title">Watermark Delay</h3>
+          <div class="chart-sub">Max delay across partitions (seconds)</div>
+          <div class="chart-wrap bottom"><canvas id="delayChart"></canvas></div>
         </div>
       </div>
     </div>
 
     <script>
-      // Strong, readable colors
       const COLORS = {
-        blue:   '#1f77b4', // produced
-        purple: '#6f42c1', // processed
+        blue:   '#1f77b4', // produced rate
+        purple: '#6f42c1', // processed rate
         teal:   '#17a2b8', // lag
+        orange: '#ff7f0e', // delay
         grid:   '#d7d7d7',
         ticks:  '#333',
         axes:   '#bdbdbd'
       };
-
       const fmt = n => Number(n ?? 0).toLocaleString();
 
+      // KPI elements
       const lagEl = document.getElementById('lag');
       const procEl = document.getElementById('processed');
       const prodEl = document.getElementById('produced');
+      const delayMaxEl = document.getElementById('delayMax');
       const topicEl = document.getElementById('topic');
       const cgEl = document.getElementById('cg');
 
-      const lagStatus = document.getElementById('status-lag');
-      const ppStatus  = document.getElementById('status-pp');
+      // Status labels
+      const lagStatus   = document.getElementById('status-lag');
+      const rateStatus  = document.getElementById('status-rate');
+      const delayStatus = document.getElementById('status-delay');
 
       const commonOpts = {
         animation: false,
@@ -96,61 +113,37 @@
           tooltip: { mode: 'index', intersect: false }
         },
         scales: {
-          x: {
-            ticks: { color: COLORS.ticks, maxTicksLimit: 10 },
-            grid: { color: COLORS.grid },
-            border: { color: COLORS.axes }
-          }
+          x: { ticks: { color: COLORS.ticks, maxTicksLimit: 10 }, grid: { color: COLORS.grid }, border: { color: COLORS.axes } }
         },
-        elements: {
-          line: { borderWidth: 3, tension: 0.25, borderCapStyle: 'round' },
-          point:{ radius: 0, hoverRadius: 3 }
-        }
+        elements: { line: { borderWidth: 3, tension: 0.25, borderCapStyle: 'round' }, point:{ radius: 0, hoverRadius: 3 } }
       };
 
-      // Lag chart (single axis)
+      // Lag chart
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal }] },
-        options: {
-          ...commonOpts,
-          scales: {
-            ...commonOpts.scales,
-            y: {
-              ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() },
-              grid:  { color: COLORS.grid },
-              border:{ color: COLORS.axes }
-            }
-          }
-        }
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ticks: { color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
       });
 
-      // Processed vs Produced — SHARED Y-AXIS
+      // Rate chart (instantaneous)
       const ppChart = new Chart(document.getElementById('ppChart').getContext('2d'), {
         type: 'line',
-        data: {
-          labels: [],
-          datasets: [
-            { label: 'Processed Total', data: [], borderColor: COLORS.purple, pointRadius: 0 },
-            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   pointRadius: 0 }
-          ]
-        },
-        options: {
-          ...commonOpts,
-          scales: {
-            ...commonOpts.scales,
-            y: {                                     // single shared axis
-              beginAtZero: true,                     // optional; remove if you prefer tighter fit
-              ticks:  { color: COLORS.ticks, callback: v => v.toLocaleString() },
-              grid:   { color: COLORS.grid },
-              border: { color: COLORS.axes }
-              // You can guide the range if needed:
-              // suggestedMin: 0,
-              // suggestedMax: undefined
-            }
-          }
-        }
+        data: { labels: [], datasets: [
+          { label: 'Processed (events/sec)', data: [], borderColor: COLORS.purple },
+          { label: 'Produced  (events/sec)', data: [], borderColor: COLORS.blue }
+        ]},
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
       });
+
+      // Watermark delay chart (seconds)
+      const delayChart = new Chart(document.getElementById('delayChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: [], datasets: [{ label: 'Max Delay (s)', data: [], borderColor: COLORS.orange }] },
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
+      });
+
+      // For rate calculation
+      let prevProcessed = null, prevProduced = null, prevTs = null;
 
       async function tick() {
         try {
@@ -158,42 +151,61 @@
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const m = await res.json();
 
-          const nowStr = `Updated ${new Date().toLocaleTimeString()}`;
-          lagStatus.textContent = nowStr;
-          lagStatus.classList.remove('bad');
-          ppStatus.textContent = nowStr;
-          ppStatus.classList.remove('bad');
+          const now = new Date();
+          const nowLabel = now.toLocaleTimeString();
+          const statusText = `Updated ${nowLabel}`;
+          [lagStatus, rateStatus, delayStatus].forEach(el => { el.textContent = statusText; el.classList.remove('bad'); });
 
           // KPIs
           lagEl.textContent = fmt(m.totalLag);
           procEl.textContent = fmt(m.processedTotal);
           prodEl.textContent = fmt(m.endTotal);
+          delayMaxEl.textContent = `${Math.round((m.watermarkDelayMsMax ?? 0) / 1000)}s`;
           topicEl.textContent = m.topic ?? '–';
           cgEl.textContent = m.consumerGroup ?? '–';
 
-          const now = new Date().toLocaleTimeString();
-
-          // Update Lag chart
-          lagChart.data.labels.push(now);
+          // Chart 1: Lag
+          lagChart.data.labels.push(nowLabel);
           lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
           if (lagChart.data.labels.length > 240) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
           lagChart.update('none');
 
-          // Update Processed vs Produced (shared Y)
-          ppChart.data.labels.push(now);
-          ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
-          ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
-          if (ppChart.data.labels.length > 240) {
-            ppChart.data.labels.shift();
-            ppChart.data.datasets.forEach(d => d.data.shift());
+          // Chart 2: Instantaneous rates
+          const nowTs = Date.now();
+          if (prevProcessed !== null && prevProduced !== null && prevTs !== null) {
+            const dtSec = Math.max(0.001, (nowTs - prevTs) / 1000);
+            let dProc = (m.processedTotal ?? 0) - prevProcessed;
+            let dProd = (m.endTotal ?? 0) - prevProduced;
+            if (dProc < 0) dProc = 0;   // guard resets/rewinds
+            if (dProd < 0) dProd = 0;
+
+            const rateProc = dProc / dtSec;
+            const rateProd = dProd / dtSec;
+
+            ppChart.data.labels.push(nowLabel);
+            ppChart.data.datasets[0].data.push(rateProc);
+            ppChart.data.datasets[1].data.push(rateProd);
+            if (ppChart.data.labels.length > 240) {
+              ppChart.data.labels.shift();
+              ppChart.data.datasets.forEach(d => d.data.shift());
+            }
+            ppChart.update('none');
           }
-          ppChart.update('none');
+          prevProcessed = m.processedTotal ?? 0;
+          prevProduced  = m.endTotal ?? 0;
+          prevTs        = nowTs;
+
+          // Chart 3: Watermark delay (max across partitions, seconds)
+          const delaySec = (m.watermarkDelayMsMax ?? 0) / 1000.0;
+          delayChart.data.labels.push(nowLabel);
+          delayChart.data.datasets[0].data.push(delaySec);
+          if (delayChart.data.labels.length > 240) { delayChart.data.labels.shift(); delayChart.data.datasets[0].data.shift(); }
+          delayChart.update('none');
 
         } catch (e) {
           console.error('metrics fetch failed:', e);
           const msg = `Error: ${e.message}`;
-          lagStatus.textContent = msg; lagStatus.classList.add('bad');
-          ppStatus.textContent = msg;  ppStatus.classList.add('bad');
+          [lagStatus, rateStatus, delayStatus].forEach(el => { el.textContent = msg; el.classList.add('bad'); });
         }
       }
 
