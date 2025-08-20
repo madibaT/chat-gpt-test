@@ -10,11 +10,19 @@
       html, body { height: 100%; }
       body { margin: 12px; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; color:#111; background:#fff; }
 
-      .layout { height: 100%; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
+      .header { display:flex; align-items:end; justify-content:space-between; gap:8px; }
       h1 { margin: 0; font-size: 18px; font-weight: 700; }
       .muted { color:#666; font-size:12px; }
 
-      /* Charts area: 2 on top, 1 full-width bottom */
+      /* Baseline controls */
+      .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .controls input[type="time"] { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font:inherit; }
+      .btn { padding:6px 10px; border:1px solid #ddd; background:#fff; border-radius:8px; cursor:pointer; }
+      .btn:hover { background:#f6f6f6; }
+      .badge { font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:#fafafa; }
+
+      /* Layout: 2 charts on top, 1 full-width bottom */
+      .layout { height: 100%; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
       :root { --top-h: 34vh; --bottom-h: 26vh; }
       .charts {
         display: grid;
@@ -46,13 +54,22 @@
   </head>
   <body>
     <div class="layout">
-      <div>
-        <h1>Event Hubs (Kafka) Metrics</h1>
-        <div class="muted">Polling <code>/metrics</code> every 3s</div>
+      <div class="header">
+        <div>
+          <h1>Event Hubs (Kafka) Metrics</h1>
+          <div class="muted">Polling <code>/metrics</code> every 3s</div>
+        </div>
+        <div class="controls">
+          <label for="baselineTime" class="muted">Baseline time (today):</label>
+          <input id="baselineTime" type="time" step="60" />
+          <button id="setBaseline" class="btn">Set baseline</button>
+          <button id="clearBaseline" class="btn">Clear</button>
+          <span id="baselineBadge" class="badge muted">No baseline</span>
+        </div>
       </div>
 
       <div class="charts">
-        <!-- Top Left: Processed vs Produced (CUMULATIVE totals) -->
+        <!-- Top Left: Processed vs Produced (cumulative, rebased at baseline) -->
         <div class="card top-left">
           <div class="status" id="status-pp">—</div>
           <h3 class="title">Processed vs Produced</h3>
@@ -66,7 +83,7 @@
           <div class="wrap"><canvas id="delayChart"></canvas></div>
         </div>
 
-        <!-- Bottom: Total Lag -->
+        <!-- Bottom: Total Lag (rebased at baseline) -->
         <div class="card bottom">
           <div class="status" id="status-lag">—</div>
           <h3 class="title">Total Lag</h3>
@@ -76,7 +93,7 @@
     </div>
 
     <script>
-      // Strong, readable colors
+      // Colors
       const COLORS = {
         blue:   '#1f77b4', // produced
         purple: '#6f42c1', // processed
@@ -108,13 +125,12 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Processed Total', data: [], borderColor: COLORS.purple, pointRadius: 0 },
-            { label: 'Produced Total',  data: [], borderColor: COLORS.blue,   pointRadius: 0 }
+            { label: 'Processed Total (rebased)', data: [], borderColor: COLORS.purple, pointRadius: 0 },
+            { label: 'Produced Total (rebased)',  data: [], borderColor: COLORS.blue,   pointRadius: 0 }
           ]
         },
         options: {
           ...commonOpts,
-          // Shared Y-axis so they're directly comparable
           scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
         }
       });
@@ -130,7 +146,7 @@
 
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
-        data: { labels: [], datasets: [{ label: 'Total Lag', data: [], borderColor: COLORS.teal, pointRadius: 0 }] },
+        data: { labels: [], datasets: [{ label: 'Total Lag (rebased)', data: [], borderColor: COLORS.teal, pointRadius: 0 }] },
         options: {
           ...commonOpts,
           scales: { ...commonOpts.scales, y: { ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
@@ -142,6 +158,60 @@
       const delayStatus = document.getElementById('status-delay');
       const lagStatus   = document.getElementById('status-lag');
 
+      // Baseline controls & state
+      const baselineInput = document.getElementById('baselineTime');
+      const setBtn = document.getElementById('setBaseline');
+      const clearBtn = document.getElementById('clearBaseline');
+      const badge = document.getElementById('baselineBadge');
+
+      let baselineTimeMs = null;           // target time-of-day (today) in ms epoch
+      let baselineActive = false;          // becomes true when we cross that time
+      let baseProcessed = null;            // captured totals at baseline moment
+      let baseProduced  = null;
+      let baseLag       = null;
+
+      function fmt(n) { return Number(n ?? 0).toLocaleString(); }
+
+      function computeTodayTimeMs(hhmm) {
+        // hhmm like "12:00" -> today at 12:00 local time
+        const [h, m] = hhmm.split(':').map(Number);
+        const now = new Date();
+        const t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+        return t.getTime();
+      }
+
+      function setBadge(text) { badge.textContent = text; }
+
+      setBtn.onclick = () => {
+        const val = baselineInput.value; // "HH:MM"
+        if (!val) {
+          // If no time entered, baseline now
+          baselineTimeMs = Date.now();
+          setBadge('Baseline: now');
+          baselineActive = false; // will activate on next tick
+          baseProcessed = baseProduced = baseLag = null;
+          return;
+        }
+        baselineTimeMs = computeTodayTimeMs(val);
+        const now = Date.now();
+        if (baselineTimeMs <= now) {
+          // If time is in the past today, activate immediately at next tick
+          setBadge(`Baseline: today ${val} (activates now)`);
+        } else {
+          const d = new Date(baselineTimeMs);
+          setBadge(`Baseline scheduled: ${d.toLocaleTimeString()}`);
+        }
+        baselineActive = false;
+        baseProcessed = baseProduced = baseLag = null;
+      };
+
+      clearBtn.onclick = () => {
+        baselineTimeMs = null;
+        baselineActive = false;
+        baseProcessed = baseProduced = baseLag = null;
+        setBadge('No baseline');
+      };
+
       async function tick() {
         try {
           const res = await fetch('/metrics', { cache: 'no-store' });
@@ -149,30 +219,46 @@
           const m = await res.json();
 
           const now = new Date();
+          const nowMs = now.getTime();
           const label = now.toLocaleTimeString();
           const statusText = `Updated ${label}`;
           [ppStatus, delayStatus, lagStatus].forEach(el => { el.textContent = statusText; el.classList.remove('bad'); });
 
-          // --- Processed vs Produced (CUMULATIVE totals) ---
+          // Activate baseline if scheduled and time passed
+          if (baselineTimeMs !== null && !baselineActive && nowMs >= baselineTimeMs) {
+            baseProcessed = m.processedTotal ?? 0;
+            baseProduced  = m.endTotal ?? 0;
+            baseLag       = m.totalLag ?? 0;
+            baselineActive = true;
+            const d = new Date(baselineTimeMs);
+            setBadge(`Baseline active: ${d.toLocaleTimeString()}`);
+          }
+
+          // Compute rebased values (never below 0)
+          const processedRebased = Math.max(0, (m.processedTotal ?? 0) - (baselineActive ? baseProcessed : 0));
+          const producedRebased  = Math.max(0, (m.endTotal      ?? 0) - (baselineActive ? baseProduced  : 0));
+          const lagRebased       = Math.max(0, (m.totalLag      ?? 0) - (baselineActive ? baseLag       : 0));
+
+          // Top-left: Processed vs Produced (rebased)
           ppChart.data.labels.push(label);
-          ppChart.data.datasets[0].data.push(m.processedTotal ?? 0);
-          ppChart.data.datasets[1].data.push(m.endTotal ?? 0);
+          ppChart.data.datasets[0].data.push(processedRebased);
+          ppChart.data.datasets[1].data.push(producedRebased);
           if (ppChart.data.labels.length > 240) {
             ppChart.data.labels.shift();
             ppChart.data.datasets.forEach(d => d.data.shift());
           }
           ppChart.update('none');
 
-          // --- Watermark Delay (seconds) ---
+          // Top-right: Watermark Delay (seconds, not rebased)
           const delaySec = (m.watermarkDelayMsMax != null) ? (m.watermarkDelayMsMax / 1000.0) : null;
           delayChart.data.labels.push(label);
           delayChart.data.datasets[0].data.push(delaySec);
           if (delayChart.data.labels.length > 240) { delayChart.data.labels.shift(); delayChart.data.datasets[0].data.shift(); }
           delayChart.update('none');
 
-          // --- Total Lag (snapshot) ---
+          // Bottom: Total Lag (rebased)
           lagChart.data.labels.push(label);
-          lagChart.data.datasets[0].data.push(m.totalLag ?? 0);
+          lagChart.data.datasets[0].data.push(lagRebased);
           if (lagChart.data.labels.length > 240) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
           lagChart.update('none');
 
