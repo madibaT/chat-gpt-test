@@ -14,14 +14,12 @@
       h1 { margin: 0; font-size: 18px; font-weight: 700; }
       .muted { color:#666; font-size:12px; }
 
-      /* Baseline controls */
       .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
       .controls input[type="time"] { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font:inherit; }
       .btn { padding:6px 10px; border:1px solid #ddd; background:#fff; border-radius:8px; cursor:pointer; }
       .btn:hover { background:#f6f6f6; }
       .badge { font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:#fafafa; }
 
-      /* Layout: 2 charts on top, 1 full-width bottom (no vertical scroll) */
       .layout { height: 100%; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
       :root { --top-h: 34vh; --bottom-h: 26vh; }
       .charts {
@@ -57,7 +55,7 @@
       <div class="header">
         <div>
           <h1>Event Hubs (Kafka) Metrics</h1>
-          <div class="muted">Polling <code>/metrics</code> every 3s • Delay = time to go from Produced to same Processed count</div>
+          <div class="muted">Polling <code>/metrics</code> every 3s • Delay = time from Produced to same Processed count</div>
         </div>
         <div class="controls">
           <label for="baselineTime" class="muted">Baseline time (today):</label>
@@ -69,21 +67,18 @@
       </div>
 
       <div class="charts">
-        <!-- Top Left: Processed vs Produced (cumulative, rebased at baseline) -->
         <div class="card top-left">
           <div class="status" id="status-pp">—</div>
           <h3 class="title">Processed vs Produced</h3>
           <div class="wrap"><canvas id="ppChart"></canvas></div>
         </div>
 
-        <!-- Top Right: Delay between curves at same count (seconds) -->
         <div class="card top-right">
           <div class="status" id="status-delay">—</div>
           <h3 class="title">Watermark Delay (Produced → Processed at same count)</h3>
           <div class="wrap"><canvas id="delayChart"></canvas></div>
         </div>
 
-        <!-- Bottom: Total Lag (rebased at baseline) -->
         <div class="card bottom">
           <div class="status" id="status-lag">—</div>
           <h3 class="title">Total Lag</h3>
@@ -94,15 +89,16 @@
 
     <script>
       const COLORS = {
-        blue:   '#1f77b4', // produced
-        purple: '#6f42c1', // processed
-        teal:   '#17a2b8', // lag
-        orange: '#ff7f0e', // delay
+        blue:   '#1f77b4',
+        purple: '#6f42c1',
+        teal:   '#17a2b8',
+        orange: '#ff7f0e',
         grid:   '#d7d7d7',
         ticks:  '#333',
         axes:   '#bdbdbd'
       };
 
+      const MAX_POINTS = 180; // keep last N points (lower = faster)
       const commonOpts = {
         animation: false,
         responsive: true,
@@ -110,61 +106,47 @@
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { position: 'top', labels: { color: COLORS.ticks, font: { weight: '600' } } },
-          tooltip: { mode: 'index', intersect: false }
+          tooltip: { mode: 'index', intersect: false },
+          decimation: { enabled: true, algorithm: 'lttb', samples: MAX_POINTS }
         },
         scales: {
-          x: { ticks: { color: COLORS.ticks, maxTicksLimit: 10 }, grid: { color: COLORS.grid }, border: { color: COLORS.axes } }
+          x: { ticks: { color: COLORS.ticks, maxTicksLimit: 6 }, grid: { color: COLORS.grid }, border: { color: COLORS.axes } }
         },
-        elements: { line: { borderWidth: 3, tension: 0.25, borderCapStyle: 'round' }, point:{ radius: 0, hoverRadius: 3 } }
+        elements: { line: { borderWidth: 2, tension: 0.2, borderCapStyle: 'round' }, point:{ radius: 0, hoverRadius: 2 } }
       };
 
-      // Charts
       const ppChart = new Chart(document.getElementById('ppChart').getContext('2d'), {
         type: 'line',
-        data: {
-          labels: [],
-          datasets: [
-            { label: 'Processed Total (rebased)', data: [], borderColor: COLORS.purple, pointRadius: 0 },
-            { label: 'Produced Total  (rebased)', data: [], borderColor: COLORS.blue,   pointRadius: 0 }
-          ]
-        },
-        options: {
-          ...commonOpts,
-          scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
-        }
+        data: { labels: [], datasets: [
+          { label: 'Processed Total (rebased)', data: [], borderColor: COLORS.purple, pointRadius: 0 },
+          { label: 'Produced  Total (rebased)', data: [], borderColor: COLORS.blue,   pointRadius: 0 }
+        ]},
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
       });
 
       const delayChart = new Chart(document.getElementById('delayChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Delay (s)', data: [], borderColor: COLORS.orange, pointRadius: 0 }] },
-        options: {
-          ...commonOpts,
-          scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
-        }
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { beginAtZero: true, ticks:{ color: COLORS.ticks }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
       });
 
       const lagChart = new Chart(document.getElementById('lagChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [{ label: 'Total Lag (rebased)', data: [], borderColor: COLORS.teal, pointRadius: 0 }] },
-        options: {
-          ...commonOpts,
-          scales: { ...commonOpts.scales, y: { ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } }
-        }
+        options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ticks:{ color: COLORS.ticks, callback: v => v.toLocaleString() }, grid:{ color: COLORS.grid }, border:{ color: COLORS.axes } } } }
       });
 
-      // Status labels
       const ppStatus    = document.getElementById('status-pp');
       const delayStatus = document.getElementById('status-delay');
       const lagStatus   = document.getElementById('status-lag');
 
-      // Baseline controls & state
+      // Baseline controls
       const baselineInput = document.getElementById('baselineTime');
       const setBtn = document.getElementById('setBaseline');
       const clearBtn = document.getElementById('clearBaseline');
       const badge = document.getElementById('baselineBadge');
 
-      let baselineTimeMs = null;
-      let baselineActive = false;
+      let baselineTimeMs = null, baselineActive = false;
       let baseProcessed = null, baseProduced = null, baseLag = null;
 
       function setBadge(text){ badge.textContent = text; }
@@ -175,31 +157,47 @@
         baselineTimeMs = val ? computeTodayTimeMs(val) : Date.now();
         baselineActive = false;
         baseProcessed = baseProduced = baseLag = null;
-        const msg = val ? `Baseline set: ${new Date(baselineTimeMs).toLocaleTimeString()}` : 'Baseline: now';
-        setBadge(msg);
+        setBadge(val ? `Baseline set: ${new Date(baselineTimeMs).toLocaleTimeString()}` : 'Baseline: now');
+        // Reset series so rebasing is instant and cheap
+        producedSeries.length = 0; processedSeries.length = 0; prodCursor = 0;
+        delayChart.data.labels = []; delayChart.data.datasets[0].data = [];
       };
-      clearBtn.onclick = () => { baselineTimeMs = null; baselineActive=false; baseProcessed=baseProduced=baseLag=null; setBadge('No baseline'); };
+      clearBtn.onclick = () => {
+        baselineTimeMs = null; baselineActive=false;
+        baseProcessed = baseProduced = baseLag = null;
+        setBadge('No baseline');
+        producedSeries.length = 0; processedSeries.length = 0; prodCursor = 0;
+        delayChart.data.labels = []; delayChart.data.datasets[0].data = [];
+      };
 
-      // --- Series storage for delay calculation (rebased cumulative) ---
-      const series = { produced: [], processed: [] };
-      const MAX_POINTS = 240;
+      // --- FAST delay computation state ---
+      // We store the rebased cumulative series with timestamps.
+      const producedSeries  = []; // [{t:number, v:number}]
+      const processedSeries = []; // (we push for completeness; not used for search now)
+      let prodCursor = 0;         // advancing cursor in producedSeries for level search
 
-      function pushSeries(arr, t, v){ arr.push({t, v}); if (arr.length > MAX_POINTS) arr.shift(); }
-
-      // Linear interpolation to find the time when a series first reaches a given level
-      function timeAtLevel(arr, level){
-        if (!arr.length) return null;
-        for (let i=0;i<arr.length;i++){
-          if (arr[i].v >= level){
-            if (arr[i].v === level || i === 0) return arr[i].t;
-            const a = arr[i-1], b = arr[i];
-            const dv = b.v - a.v;
-            if (dv === 0) return b.t;
-            const frac = (level - a.v) / dv;
-            return a.t + frac * (b.t - a.t);
-          }
+      function pushSeries(arr, t, v){
+        arr.push({ t, v });
+        if (arr.length > MAX_POINTS) {
+          arr.shift();
+          // Adjust cursor if it fell off the front
+          if (arr === producedSeries && prodCursor > 0) prodCursor--;
         }
-        return null; // not reached yet
+      }
+
+      // Find time when produced first reaches 'level' using a rolling cursor.
+      function timeProducedAtLevel(level){
+        const arr = producedSeries;
+        if (!arr.length) return null;
+        // Advance cursor until v >= level (monotonic series expected)
+        while (prodCursor < arr.length && arr[prodCursor].v < level) prodCursor++;
+        if (prodCursor >= arr.length) return null; // not reached yet
+        if (arr[prodCursor].v === level || prodCursor === 0) return arr[prodCursor].t;
+        const a = arr[prodCursor - 1], b = arr[prodCursor];
+        const dv = b.v - a.v;
+        if (dv <= 0) return b.t; // flat or duplicate
+        const frac = (level - a.v) / dv;
+        return a.t + frac * (b.t - a.t);
       }
 
       async function tick() {
@@ -221,6 +219,9 @@
             baseLag       = m.totalLag ?? 0;
             baselineActive = true;
             setBadge(`Baseline active: ${new Date(baselineTimeMs).toLocaleTimeString()}`);
+            // Reset series so levels start from ~0
+            producedSeries.length = 0; processedSeries.length = 0; prodCursor = 0;
+            delayChart.data.labels = []; delayChart.data.datasets[0].data = [];
           }
 
           // Rebased values (>= 0)
@@ -228,15 +229,15 @@
           const producedRe  = Math.max(0, (m.endTotal      ?? 0) - (baselineActive ? baseProduced  : 0));
           const lagRe       = Math.max(0, (m.totalLag      ?? 0) - (baselineActive ? baseLag       : 0));
 
-          // Handle resets (new baseline or hub recreate causing drop)
-          const lastP = series.produced.length ? series.produced[series.produced.length-1].v : null;
-          const lastC = series.processed.length ? series.processed[series.processed.length-1].v : null;
+          // Handle resets (drop in totals)
+          const lastP = producedSeries.length ? producedSeries[producedSeries.length-1].v : null;
+          const lastC = processedSeries.length ? processedSeries[processedSeries.length-1].v : null;
           if ((lastP !== null && producedRe  < lastP) || (lastC !== null && processedRe < lastC)) {
-            series.produced = []; series.processed = [];
+            producedSeries.length = 0; processedSeries.length = 0; prodCursor = 0;
             delayChart.data.labels = []; delayChart.data.datasets[0].data = [];
           }
 
-          // Top-left: push cumulative totals (rebased)
+          // Update top-left cumulative chart
           ppChart.data.labels.push(label);
           ppChart.data.datasets[0].data.push(processedRe);
           ppChart.data.datasets[1].data.push(producedRe);
@@ -244,30 +245,36 @@
             ppChart.data.labels.shift();
             ppChart.data.datasets.forEach(d => d.data.shift());
           }
-          ppChart.update('none');
 
-          // Store series for delay calculation
-          pushSeries(series.produced,  nowMs, producedRe);
-          pushSeries(series.processed, nowMs, processedRe);
+          // Update series for delay calc (O(1) amortized)
+          pushSeries(producedSeries,  nowMs, producedRe);
+          pushSeries(processedSeries, nowMs, processedRe);
 
-          // Delay at "current processed level"
-          const tProdAtLevel = timeAtLevel(series.produced, processedRe);
-          const tProcAtLevel = timeAtLevel(series.processed, processedRe);
+          // Compute delay quickly:
+          // time when produced reached current processed count vs now
           let delaySec = null;
-          if (tProdAtLevel != null && tProcAtLevel != null) {
-            delaySec = Math.max(0, (tProcAtLevel - tProdAtLevel) / 1000);
-          }
+          const tProd = timeProducedAtLevel(processedRe);
+          if (tProd != null) delaySec = Math.max(0, (nowMs - tProd) / 1000);
 
-          // Top-right: delay series
+          // Update delay chart
           delayChart.data.labels.push(label);
           delayChart.data.datasets[0].data.push(delaySec);
-          if (delayChart.data.labels.length > MAX_POINTS) { delayChart.data.labels.shift(); delayChart.data.datasets[0].data.shift(); }
-          delayChart.update('none');
+          if (delayChart.data.labels.length > MAX_POINTS) {
+            delayChart.data.labels.shift();
+            delayChart.data.datasets[0].data.shift();
+          }
 
-          // Bottom: Total Lag (rebased snapshot)
+          // Update lag chart
           lagChart.data.labels.push(label);
           lagChart.data.datasets[0].data.push(lagRe);
-          if (lagChart.data.labels.length > MAX_POINTS) { lagChart.data.labels.shift(); lagChart.data.datasets[0].data.shift(); }
+          if (lagChart.data.labels.length > MAX_POINTS) {
+            lagChart.data.labels.shift();
+            lagChart.data.datasets[0].data.shift();
+          }
+
+          // Commit all paint operations in one go
+          ppChart.update('none');
+          delayChart.update('none');
           lagChart.update('none');
 
         } catch (e) {
